@@ -1,0 +1,9 @@
+{
+  "tickers": [
+    "BTC-USD",
+    "ETH-USD",
+    "SOL-USD",
+    "AVAX-USD"
+  ],
+  "transaction_fee_percent": 0.001
+}

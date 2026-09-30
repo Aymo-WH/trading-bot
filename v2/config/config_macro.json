@@ -1,0 +1,10 @@
+{
+  "tickers": [
+    "SPY",
+    "GLD",
+    "TLT",
+    "XLE",
+    "XLF"
+  ],
+  "transaction_fee_percent": 0.001
+}

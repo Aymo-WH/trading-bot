@@ -1,0 +1,118 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{setspace}
+\geometry{a4paper, margin=1in}
+
+\title{\textbf{Engineering Alpha: Overcoming Structural Failures in Information-Driven Reinforcement Learning Architectures}}
+\author{Khoo Wei Heng}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+The transition from retail algorithmic trading to institutional quantitative engineering requires abandoning chronological time-series analysis in favor of information-driven frameworks. This paper documents the end-to-end architecture of a dual-agent Reinforcement Learning (RL) meta-labeling system. Crucially, it chronicles the empirical development process, detailing the specific structural failures encountered—including data starvation via threshold miscalculation, sequence-induced IndexErrors during fractional differentiation, and mathematical state loss during live inference—and the rigorous engineering solutions applied to resolve them. The finalized architecture synthesizes Information-Driven Dollar Bars, Point-in-Time PCA, and Ornstein-Uhlenbeck stochastic execution barriers, rigorously validated via Combinatorially Symmetric Cross-Validation (CSCV).
+\end{abstract}
+
+\section{Introduction}
+Standard algorithmic trading relies on chronological time bars (OHLCV) and integer-differentiated data. These methodologies invariably introduce heteroscedasticity, destroy statistical memory, and lead to catastrophic backtest overfitting. Our objective was to engineer a system bridging the gap between theoretical stochastic calculus and applied Deep Reinforcement Learning, utilizing the frameworks of Marcos López de Prado. However, theoretical mathematics often fractures when applied to raw market infrastructure. This paper documents both the intended design and the forensic telemetry of the failures that refined it.
+
+\section{Information-Driven Data Architecture}
+
+\subsection{The Microstructure Problem and Dollar Bars}
+Chronological time oversamples information during low market activity and undersamples during volatile shocks. To achieve a normal, homoscedastic distribution of returns, we engineered Information-Driven Dollar Bars. We sample the market only when a dynamic threshold $M$ of fiat currency is exchanged:
+$$ \theta_T = \sum_{t=1}^{T} p_t v_t $$
+A bar is formed when $\theta_T \geq M$. 
+
+\subsection{Empirical Failure 1: The Threshold Starvation Flaw}
+In our initial architecture, the dynamic threshold $M$ was calibrated using a rolling 30-day window of total Dollar Volume, arbitrarily divided by 10:
+$$ M_{T, \text{failed}} = \frac{\sum_{i=T-210}^{T} \theta_i}{10} $$
+\textbf{The Failure:} This equation defined $M$ as representing three entire days of trading volume. Instead of generating our target of 10 intraday bars per day, the engine generated 1 bar every 3 days. Over a 730-day period, the pipeline produced a mere 240 bars. When subsequent preprocessing (dropping NaNs) was applied, the dataset was decimated to exactly 9 valid rows, causing the RL environment to instantly crash with an `IndexError`.\\
+\textbf{The Solution:} We recalibrated the threshold divisor to map directly to the trading day frequency. By dividing the 30-day sum by 300 (30 days $\times$ 10 target bars), we achieved thousands of highly-resolved, homoscedastic events:
+$$ M_{T, \text{optimal}} = \frac{\sum_{i=T-210}^{T} \theta_i}{300} $$
+
+\subsection{Stationarity and Fractional Differentiation (FFD)}
+Machine learning requires stationary data, but standard integer differencing ($d=1$) destroys systemic memory. We applied Fixed-Width Window Fractional Differentiation (FFD), utilizing the binomial series expansion of the lag operator:
+$$ \omega_k = - \omega_{k-1} \frac{d - k + 1}{k} $$
+
+\subsection{Empirical Failure 2: The Look-Ahead Sequence Crash}
+\textbf{The Failure:} The FFD algorithm inherently requires a historical convolution window, generating a large block of initial `NaN` values. In early iterations, the dynamic 80/20 train-test split index was calculated \textit{before} dropping these `NaN` rows. Consequently, the entire 80\% "Training Set" timeline was composed of invalid data, which was subsequently deleted. The agent was fed an empty observation matrix, triggering a secondary mathematical collapse.\\
+\textbf{The Solution:} We enforced strict pipeline sequencing. The dataset is first truncated to drop FFD-induced `NaN`s, and only then is the dynamic 80/20 split index calculated. This guarantees the RL agent always receives a mathematically sound training vector.
+
+\section{Dimensionality Reduction and State Management}
+To prevent Look-Ahead Bias, we applied Principal Component Analysis (PCA) strictly point-in-time. The `StandardScaler` and PCA matrices are fitted exclusively to the training split before transforming the out-of-sample data.
+
+\subsection{Empirical Failure 3: The Ghost Matrices}
+\textbf{The Failure:} During the transition from the laboratory environment to a live inference script, the models generated profitable predictions in-sample but failed structurally out-of-sample. Forensic analysis revealed that while the PCA and Scaler matrices were fitted during data generation, they were never exported to disk. The live inference engine was attempting to feed raw, unscaled market prices into a XGBoost that had learned a highly orthogonalized PCA state space.\\
+\textbf{The Solution:} We engineered a strict state-management protocol using `joblib`. The exact mathematical state of the `StandardScaler` and `PCA` transformations are dynamically exported to a dedicated `models/matrices/` directory per asset. The decoupled inference engine strictly loads these matrices before routing live broker data to the neural networks.
+
+\section{The Meta-Labeling Framework}
+A fundamental flaw in predictive modeling is conflating trade direction with conviction. We separated these concerns via a dual-network architecture:
+\begin{itemize}
+    \item \textbf{Microstructural Features:} Integrated VPIN, SADF, and Amihud Illiquidity to replace retail technical indicators, enabling rigorous state modeling.
+    \item \textbf{Safe RL Reward Function:} Engineered a new reward function incorporating Turnover, Variance, and Drawdown penalties to force risk-adjusted bet sizing.
+    \item \textbf{Primary Model (XGBoost):} Utilizes the Triple-Barrier Method to generate directional signals.
+    \item \textbf{Secondary Model (PPO):} Analyzes orthogonalized state vectors to predict the probability $p$ of the XGBoost's success.
+\end{itemize}
+Bet sizes $m$ are scaled continuously using the Normal Cumulative Distribution Function based on the PPO's confidence:
+$$ z = \frac{p - 0.5}{\sqrt{p(1-p)}}, \quad m = 2Z[z] - 1 $$
+
+\section{Stochastic Execution Barriers (O-U Process)}
+Optimizing execution barriers alongside neural network parameters leads to curve-fitting. We isolated execution logic by modeling asset dynamics as an Ornstein-Uhlenbeck stochastic process, estimating mean reversion speed ($\varphi$) and volatility ($\sigma$):
+$$ P_{i,t} = (1 - \\varphi)E_0[P_{i,T_i}] + \\varphi P_{i,t-1} + \\sigma \\epsilon_{i,t} $$
+Dynamic Triple-Barriers are calibrated by maximizing the Sharpe ratio across 100,000 synthetic futures paths.
+
+\section{Hyperparameter Optimization and Policy Convergence}
+To achieve stability in Deep Reinforcement Learning within financial markets, compute parameters cannot be arbitrary. The architecture enforces a strict computational runway of 1,000,000 timesteps across 500 independent optimization trials.
+
+\subsection{Policy Convergence (1,000,000 Timesteps)}
+The data pipeline compresses extensive historical market data into high-resolution Information-Driven Dollar Bars. For the agents to reliably understand the underlying microstructure—experiencing sufficient volatile breakouts and mean-reverting consolidations—massive repetition is required. Truncating the training runway forces the neural network to memorize immediate noise. One million timesteps ensures the agent traverses the orthogonalized PCA state space sufficiently, allowing the policy to converge from stochastic exploration to calculated exploitation.
+
+\subsection{Bayesian Topology Mapping (500 Trials)}
+Hyperparameter tuning is governed by the Optuna engine utilizing a Tree-structured Parzen Estimator (TPE). Navigating a massive, multi-dimensional landscape of learning rates, batch sizes, and network depths requires exhaustive mapping. While 20-50 trials merely sample the topology to identify regions of catastrophic failure, 500 trials ensure the algorithm systematically isolates the absolute global peak of the hyperparameter landscape, extracting maximum out-of-sample alpha.
+
+\section{Statistical Validation (CSCV)}
+To quantify selection bias during optimization, we deployed Combinatorially Symmetric Cross-Validation (CSCV). We partition the out-of-sample matrix and evaluate all combinations to compute the logit $\lambda_c$. The Probability of Backtest Overfitting (PBO) is the cumulative distribution below zero:
+$$ PBO = \int_{-\infty}^{0} f(\lambda) d\lambda $$
+
+\section{Architecture V2 Upgrades}
+\begin{itemize}
+    \item \textbf{Microstructural Features:} Integrated VPIN, SADF, Amihud Illiquidity, and Kyle's Lambda to capture market microstructure dynamics and informed trading probability.
+    \item \textbf{Safe RL Reward Function:} Engineered a new reward function incorporating Turnover, Variance, and Drawdown penalties to strictly penalize excessive trading, volatility, and portfolio drawdown.
+    \item \textbf{Hybrid Vectorization:} Transitioned to a 1D state-tracking loop paired with NumPy reducing functions for highly performant Dollar Bar construction.
+    \item \textbf{Data Leakage Prevention:} Explicitly defined a 60-Period Train/Test Embargo to strictly separate in-sample from out-of-sample datasets, eliminating predictive look-ahead bias.
+    \item \textbf{Optimized Execution Barriers:} Utilized 3D Tensor broadcasting for calculating the Profit-Taking and Stop-Loss grids to enhance computational speed during localized grid searches.
+    \item \textbf{Cloud Execution Safeguards:} Implemented memory optimization techniques (removing DataFrame copies) and absolute path resolution to ensure strict RunPod serverless stability and mitigate directory traversal vulnerabilities.
+\end{itemize}
+
+\section{Empirical Results and Project Status (June 2026)}
+Honesty about negative results is a first-class part of this record.
+
+\subsection{The Directional Signal Did Not Generalize}
+Run end-to-end on hourly Dollar Bars across seven assets with a purged train/test split, the XGBoost direction classifier showed strong in-sample statistics but \textbf{no out-of-sample edge}. Across three successive experiments the out-of-sample 15-bar win rate never exceeded $\approx 51\%$ (statistically a coin flip):
+\begin{itemize}
+    \item Four microstructural features with a random split: OOS net EV $-0.19\%$, win rate $50.8\%$.
+    \item Adding a purged, embargoed temporal split and regularization: $-1.12\%$, $49.2\%$.
+    \item Adding price/momentum/volatility/FFD features (eleven inputs): $-0.94\%$, $42.7\%$.
+\end{itemize}
+Critically, the \emph{in-sample} win rate fell from $63.6\%$ to $53.7\%$ as the leaky random split was replaced with a purged temporal split --- revealing that much of the apparent edge was a leakage artifact of shuffling autocorrelated bars.
+
+\subsection{The Overfitting Gate Confirmed It}
+Combinatorially Symmetric Cross-Validation returned $\text{PBO} = 0.65$ (a clear failure): the in-sample-best configuration ranks below the out-of-sample median in the majority of recombinations. Run-to-run summed ROI swung between roughly $-5\%$ and $+5\%$ on identical settings --- the signature of a noise-dominated signal. The gate performed exactly as designed: it falsified the strategy before any capital was committed.
+
+\subsection{Correction: the Safe RL Reward Was Scaffolded, Not Active}
+Earlier sections describe a risk-adjusted reward incorporating turnover, variance, and drawdown penalties. In the implementation these penalty coefficients were left at zero; the operative reward was $\text{daily\_return} \times 100$ with a $50\%$ bonus on positive returns. The risk-adjusted reward was never validated, and is recorded here as intended-but-unrealized design.
+
+\subsection{Diagnosis and Successor}
+The microstructural features (VPIN, Amihud Illiquidity, Kyle's Lambda, SADF) are documented predictors of \emph{volatility} and informed-flow regimes, not of short-horizon direction. The directional thesis is therefore set aside. The infrastructure --- Information-Driven Dollar Bars, FFD, Point-in-Time PCA, Triple-Barrier labeling, RL sizing, and the PBO/CSCV gate --- is sound and is carried forward into a successor project that targets volatility-managed exposure rather than directional prediction.
+
+\section{Conclusion}
+Building institutional quantitative architecture is not an exercise in avoiding failure, but in structurally harvesting it. This pipeline succeeded as an \emph{engineering} effort: it cleanly diagnosed data starvation, look-ahead bias, and inference state-loss, and --- most importantly --- its validation gate correctly rejected a directional signal that did not survive out of sample. The directional alpha hypothesis is disproven on this universe; the reusable infrastructure, and the discipline of gating every deployment decision on PBO, are the durable results.
+
+\end{document}
